@@ -1,0 +1,13 @@
+---
+description: Regras do teste técnico Inffus Billing
+alwaysApply: true
+---
+
+# Inffus Billing — agent guidelines
+
+- Stack obrigatória: Laravel (PHP) + Next.js/TypeScript + MySQL + Docker Compose.
+- Não adicionar marca d'água, trailer ou menção "Made with Cursor" / Co-authored-by Cursor em commits, PRs, código ou documentação.
+- Commits pequenos e semânticos (feat/fix/test/chore/docs).
+- Juros compostos no backend: original * (1 + taxa_mensal) ^ (dias/30).
+- Relatórios: filtros/ordenação/paginação no banco; evitar N+1; CSV em stream; PDF com limite documentado.
+- Manter seeders/factories e testes de feature do backend alinhados aos cenários do README do teste.
