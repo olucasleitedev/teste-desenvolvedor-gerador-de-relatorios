@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Billing;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\Response;
 
 class BillingReportService
@@ -81,6 +82,26 @@ class BillingReportService
             'isTruncated' => $isTruncated,
         ])->setPaper('a4', 'landscape')->download('billing-report-'.now()->format('YmdHis').'.pdf')
             ->header('X-Report-Row-Limit', '2000');
+    }
+
+    public function pdfToDisk(array $filters, string $path): int
+    {
+        $totalCount = $this->query($filters)->count();
+        $rows = $this->query($filters)->orderBy('id')->limit(2000)->get();
+        $isTruncated = $totalCount > 2000;
+
+        Storage::disk('local')->makeDirectory(dirname($path));
+
+        $pdf = Pdf::loadView('reports.billing-pdf', [
+            'rows' => $rows,
+            'filters' => $filters,
+            'totals' => $this->totals($this->query($filters)),
+            'isTruncated' => $isTruncated,
+        ])->setPaper('a4', 'landscape')->output();
+
+        Storage::disk('local')->put($path, $pdf);
+
+        return $rows->count();
     }
 
     private function applyStatus(Builder $query, string $status): void
