@@ -22,8 +22,9 @@ class BillingApiTest extends TestCase
     public function test_unauthenticated_users_cannot_access_or_export_reports(): void
     {
         $this->getJson('/api/reports/billing')->assertUnauthorized();
-        $this->get('/api/reports/billing/export/csv')->assertUnauthorized();
-        $this->get('/api/reports/billing/export/pdf')->assertUnauthorized();
+        $this->getJson('/api/reports/billing/export/csv')->assertUnauthorized();
+        $this->getJson('/api/reports/billing/export/pdf')->assertUnauthorized();
+        $this->postJson('/api/reports/billing/exports', ['format' => 'csv'])->assertUnauthorized();
     }
 
     public function test_overdue_billing_uses_compound_interest(): void
