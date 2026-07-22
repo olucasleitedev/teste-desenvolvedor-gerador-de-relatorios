@@ -30,3 +30,6 @@ frontend/.next/
 frontend/out/
 frontend/.env
 frontend/.env.local
+
+# Postman local (uso pessoal, não versionar)
+postman/
