@@ -4,10 +4,11 @@ Aplicação fullstack de faturamento com autenticação, gestão de clientes/cob
 
 ## Stack
 
-- **Backend:** PHP 8.3 + Laravel 13 + Sanctum + DomPDF
+- **Backend:** PHP 8.4 + Laravel 13 + Sanctum + DomPDF
 - **Frontend:** Next.js 15 + TypeScript + Tailwind CSS
 - **Banco:** MySQL 8.4
-- **Infra:** Docker + Docker Compose
+- **Filas:** RabbitMQ 3.13 (exportação assíncrona de relatórios)
+- **Infra:** Docker + Docker Compose + GitHub Actions (CI)
 
 ## Como executar
 
@@ -20,9 +21,12 @@ docker compose up --build
 
 Serviços:
 
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000/api
-- MySQL: localhost:3306
+| Serviço | URL |
+|---------|-----|
+| Frontend | http://localhost:3000 |
+| Backend API | http://localhost:8000/api |
+| MySQL | localhost:3306 |
+| RabbitMQ Management | http://localhost:15672 (guest/guest) |
 
 Login padrão (seed):
 
@@ -45,6 +49,59 @@ docker compose exec backend php artisan test
 
 Os testes usam SQLite em memória (`phpunit.xml`).
 
+## CI (GitHub Actions)
+
+Pipeline em `.github/workflows/ci.yml`:
+
+- **Backend:** PHPUnit (PHP 8.4)
+- **Frontend:** ESLint + build Next.js
+- **Docker:** validação do `docker-compose.yml` + build das imagens
+
+Em produção real, o mesmo pipeline alimentaria ambientes de staging/homolog/prod; neste teste técnico mantemos CI executável no fork, sem dependência de infra externa.
+
+## Arquitetura — exportação assíncrona
+
+O módulo de relatórios mantém exportação **síncrona** (CSV stream / PDF imediato) para volumes pequenos e adiciona exportação **assíncrona** via fila para grandes volumes.
+
+```text
+Frontend ──► Laravel API ──► MySQL
+                 │
+                 │ dispatch ProcessReportExport
+                 ▼
+            RabbitMQ (report.exports)
+                 │
+                 ▼
+         report-worker (reports:consume-exports)
+                 │
+                 ▼
+      storage/app/report-exports/{uuid}.csv|pdf
+                 │
+                 ▼
+Frontend ◄── polling status + download
+```
+
+O worker é um processo dedicado (`report-worker`) que consome mensagens RabbitMQ via `php-amqplib`, sem acoplar o CRUD ao pacote de filas do Laravel — evitando incompatibilidades de versão e mantendo controle sobre retry/ack.
+
+### Endpoints de exportação assíncrona
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| `POST` | `/api/reports/billing/exports` | Enfileira exportação (`format`: csv ou pdf) |
+| `GET` | `/api/reports/billing/exports/{id}` | Consulta status (`pending` → `processing` → `completed` / `failed`) |
+| `GET` | `/api/reports/billing/exports/{id}/download` | Download do arquivo gerado |
+
+Exportação síncrona (mantida):
+
+- `GET /api/reports/billing/export/csv`
+- `GET /api/reports/billing/export/pdf`
+
+### Por que microserviço no worker de relatórios
+
+- Relatórios com milhões de linhas não devem bloquear a API HTTP.
+- PDF (DomPDF) consome memória; isolar em worker evita impacto no CRUD.
+- RabbitMQ permite retry, backpressure e escala horizontal de workers.
+- CRUD, auth e consulta paginada permanecem no monolito Laravel (escopo adequado ao teste).
+
 ## Regra de juros (compostos)
 
 Cobranças vencidas e não pagas têm o valor atualizado calculado **em tempo real no backend**:
@@ -64,7 +121,7 @@ juros = valor_atualizado - valor_original
 - Cálculo de juros centralizado no backend para garantir consistência em listagens, detalhe e relatórios.
 - Relatórios com filtros/ordenação/paginação no banco; eager load de `customer` para evitar N+1.
 - CSV streaming com `lazyById` (não carrega tudo em memória).
-- PDF com DomPDF limitado a 2.000 linhas (com aviso); volumes maiores devem usar CSV ou fila assíncrona.
+- PDF síncrono limitado a 2.000 linhas; exportação em fila grava arquivo em disco para download posterior.
 
 ## Estratégia de performance
 
@@ -80,6 +137,10 @@ juros = valor_atualizado - valor_original
 - `customer_id`, `status`, `issue_date`, `due_date`, `payment_date`
 - compostos: `(status, issue_date)`, `(status, due_date)`, `(status, payment_date)`, `(customer_id, status)`, `(customer_id, issue_date)`
 
+**report_exports**
+
+- `(user_id, status)`, `created_at`
+
 ### Por que esses índices
 
 Os filtros do relatório combinam status + campo de data e opcionalmente cliente. Os compostos cobrem os caminhos mais comuns do `WHERE`/`ORDER BY` sem full scan em volumes altos.
@@ -89,29 +150,32 @@ Os filtros do relatório combinam status + campo de data e opcionalmente cliente
 - Listagens e relatório paginam no MySQL.
 - Filtros e ordenação ficam na query.
 - Totalizadores percorrem o conjunto filtrado com cursor (`cursor()`), sem materializar a lista completa em arrays PHP.
-- Em produção, totalizadores podem ser cacheados ou materializados por período.
+- Exportações grandes são enfileiradas; o worker processa com streaming (CSV) ou limite documentado (PDF).
 
 ### Exportações em grande volume
 
-- **CSV:** stream por chunks de 500 IDs; adequado para extratos grandes.
-- **PDF:** renderização HTML→PDF em memória; por isso há teto de 2.000 linhas. Acima disso, recomenda-se job assíncrono (fila) + armazenamento do arquivo.
+- **CSV síncrono/assíncrono:** stream por chunks de 500 IDs via `lazyById`.
+- **PDF síncrono/assíncrono:** renderização HTML→PDF em memória; teto de 2.000 linhas por job.
+- **Fila:** RabbitMQ com fila `report.exports`, worker dedicado, 3 tentativas, timeout de 600s.
 
 ### Melhorias adicionais em produção
 
-- Filas para exportações grandes (S3 + notificação)
-- Read replica / particionamento por data
+- Armazenamento S3 + URL assinada para downloads
+- Dead-letter queue para jobs falhos
+- Read replica / particionamento por data em `billings`
 - Cache Redis de totalizadores
-- Observabilidade (slow query log, APM)
-- CI com testes e análise estática
+- Observabilidade (slow query log, APM, métricas de fila)
+- CD para staging/homolog/prod com secrets por ambiente
 
 ## Estrutura
 
 ```text
-backend/     API Laravel
-frontend/    Next.js
-docker-compose.yml
+backend/           API Laravel + jobs de exportação
+frontend/          Next.js
+docker-compose.yml backend, frontend, mysql, rabbitmq, report-worker
+.github/workflows/ CI
 .env.example
-.cursor/     instruções usadas no desenvolvimento assistido por IA
+.cursor/           instruções usadas no desenvolvimento assistido por IA
 ```
 
 ## Uso de IA no desenvolvimento
