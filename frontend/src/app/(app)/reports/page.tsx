@@ -2,13 +2,14 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { Alert, Field, Loading, PageTitle, Pagination, SelectField } from "@/components/ui";
-import { api, download, money, queryString } from "@/lib/api";
+import { api, download, money, pollReportExport, queryString, queueReportExport } from "@/lib/api";
 import type {
   ApiError,
   Billing,
   BillingReportResponse,
   Customer,
   PaginatedResponse,
+  ReportExport,
   ReportTotals,
 } from "@/types/api";
 import { paginationOf } from "@/types/api";
@@ -37,6 +38,8 @@ export default function ReportsPage() {
   const [lastPage, setLastPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState<"csv" | "pdf" | null>(null);
+  const [queueExporting, setQueueExporting] = useState<"csv" | "pdf" | null>(null);
+  const [queuedExport, setQueuedExport] = useState<ReportExport | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [filters, setFilters] = useState({
@@ -102,6 +105,33 @@ export default function ReportsPage() {
     }
   }
 
+  async function onQueueExport(type: "csv" | "pdf") {
+    setQueueExporting(type);
+    setQueuedExport(null);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const queued = await queueReportExport(type, filters);
+      setQueuedExport(queued.data);
+      setSuccess(`Exportação ${type.toUpperCase()} enfileirada. Aguardando processamento…`);
+
+      const completed = await pollReportExport(queued.data.id, setQueuedExport);
+
+      if (completed.download_url) {
+        await download(completed.download_url, `relatorio-faturamento.${type}`);
+      }
+
+      setSuccess(
+        `Exportação ${type.toUpperCase()} concluída${completed.row_count ? ` (${completed.row_count} linhas)` : ""}.`,
+      );
+    } catch (err) {
+      setError(err as ApiError);
+    } finally {
+      setQueueExporting(null);
+    }
+  }
+
   return (
     <div>
       <PageTitle title="Relatório de faturamento" />
@@ -162,18 +192,31 @@ export default function ReportsPage() {
           <option value="original_amount">Valor original</option>
           <option value="status">Status</option>
         </SelectField>
-        <div className="flex items-end gap-2 md:col-span-3">
+        <div className="flex flex-wrap items-end gap-2 md:col-span-3">
           <button type="submit" className="btn-primary">
             Aplicar filtros
           </button>
-          <button type="button" className="btn-secondary" onClick={() => onExport("csv")} disabled={!!exporting}>
+          <button type="button" className="btn-secondary" onClick={() => onExport("csv")} disabled={!!exporting || !!queueExporting}>
             {exporting === "csv" ? "Exportando…" : "Exportar CSV"}
           </button>
-          <button type="button" className="btn-secondary" onClick={() => onExport("pdf")} disabled={!!exporting}>
+          <button type="button" className="btn-secondary" onClick={() => onExport("pdf")} disabled={!!exporting || !!queueExporting}>
             {exporting === "pdf" ? "Exportando…" : "Exportar PDF"}
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => onQueueExport("csv")} disabled={!!exporting || !!queueExporting}>
+            {queueExporting === "csv" ? "Processando fila…" : "CSV em fila"}
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => onQueueExport("pdf")} disabled={!!exporting || !!queueExporting}>
+            {queueExporting === "pdf" ? "Processando fila…" : "PDF em fila"}
           </button>
         </div>
       </form>
+
+      {queuedExport && queueExporting && (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
+          Exportação em fila: <strong>{queuedExport.status}</strong>
+          {queuedExport.row_count ? ` · ${queuedExport.row_count} linhas` : ""}
+        </div>
+      )}
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <TotalCard label="Quantidade" value={String(totals.count)} />

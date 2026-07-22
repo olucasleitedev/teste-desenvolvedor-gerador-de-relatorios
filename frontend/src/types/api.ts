@@ -70,6 +70,23 @@ export interface BillingReportResponse extends PaginatedResponse<Billing> {
   filters?: Record<string, string | number>;
 }
 
+export interface ReportExport {
+  id: string;
+  format: "csv" | "pdf";
+  status: "pending" | "processing" | "completed" | "failed";
+  filters?: Record<string, string | number>;
+  row_count?: number | null;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at?: string;
+  download_url?: string | null;
+}
+
+export interface ReportExportResponse {
+  data: ReportExport;
+}
+
 export function paginationOf<T>(response: PaginatedResponse<T>) {
   return {
     page: response.meta?.current_page ?? response.current_page ?? 1,

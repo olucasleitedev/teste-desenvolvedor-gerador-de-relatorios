@@ -1,5 +1,5 @@
 import { getToken } from "@/lib/auth";
-import type { ApiError } from "@/types/api";
+import type { ApiError, ReportExport, ReportExportResponse } from "@/types/api";
 
 const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api").replace(/\/$/, "");
 
@@ -77,4 +77,48 @@ export function money(value?: string | number | null) {
 
 export function percent(rate?: string | number | null) {
   return `${(Number(rate ?? 0) * 100).toFixed(2)}%`;
+}
+
+export async function queueReportExport(
+  format: "csv" | "pdf",
+  filters: Record<string, string | number | undefined | null>,
+) {
+  return api<ReportExportResponse>("/reports/billing/exports", {
+    method: "POST",
+    body: JSON.stringify({ format, ...filters }),
+  });
+}
+
+export async function getReportExport(exportId: string) {
+  return api<ReportExportResponse>(`/reports/billing/exports/${exportId}`);
+}
+
+export async function pollReportExport(
+  exportId: string,
+  onStatus?: (reportExport: ReportExport) => void,
+) {
+  const maxAttempts = 60;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const response = await getReportExport(exportId);
+    onStatus?.(response.data);
+
+    if (response.data.status === "completed") {
+      return response.data;
+    }
+
+    if (response.data.status === "failed") {
+      throw {
+        message: response.data.error_message ?? "A exportação em fila falhou.",
+        status: 500,
+      } satisfies ApiError;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  throw {
+    message: "Tempo limite ao aguardar a exportação em fila.",
+    status: 408,
+  } satisfies ApiError;
 }
