@@ -18,6 +18,19 @@ services:
       timeout: 5s
       retries: 20
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: inffus-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   backend:
     build:
       context: ./backend
@@ -38,10 +51,20 @@ services:
       DB_DATABASE: ${DB_DATABASE:-billing}
       DB_USERNAME: ${DB_USERNAME:-billing}
       DB_PASSWORD: ${DB_PASSWORD:-secret}
+      QUEUE_CONNECTION: ${QUEUE_CONNECTION:-database}
+      REPORT_EXPORT_DRIVER: ${REPORT_EXPORT_DRIVER:-rabbitmq}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      RABBITMQ_QUEUE: report.exports
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       mysql:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     command: >
       sh -c "composer install --no-interaction &&
@@ -49,6 +72,44 @@ services:
              php artisan migrate --force &&
              php artisan db:seed --force &&
              php artisan serve --host=0.0.0.0 --port=8000"
+
+  report-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: inffus-report-worker
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./backend:/var/www/html
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_URL: ${APP_URL:-http://localhost:8000}
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: ${DB_DATABASE:-billing}
+      DB_USERNAME: ${DB_USERNAME:-billing}
+      DB_PASSWORD: ${DB_PASSWORD:-secret}
+      QUEUE_CONNECTION: ${QUEUE_CONNECTION:-database}
+      REPORT_EXPORT_DRIVER: ${REPORT_EXPORT_DRIVER:-rabbitmq}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      RABBITMQ_QUEUE: report.exports
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    command: >
+      sh -c "composer install --no-interaction &&
+             php artisan reports:consume-exports"
 
   frontend:
     build:
